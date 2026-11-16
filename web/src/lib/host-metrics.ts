@@ -1,8 +1,14 @@
 import "server-only";
 
-import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 const METRICS_PATH = "/run/caldev-metrics/host-metrics.json";
+const REQUEST_DIR = "/run/caldev-metric-requests";
+const RESPONSE_DIR = "/run/caldev-metrics/metric-responses";
+const REFRESH_TIMEOUT_MS = 4500;
+const STALE_AFTER_MS = 15 * 60 * 1000;
 const GIB = 1024 ** 3;
 
 type Capacity = {
@@ -72,31 +78,77 @@ function capacity(value: unknown): Capacity | null {
   return { total_bytes: total, used_bytes: used, available_bytes: available, usage_percent: percent };
 }
 
+function parseHostMetrics(raw: unknown): HostMetrics | null {
+  const data = record(raw);
+  if (!data) return null;
+  const timestamp = nonemptyString(data.collected_at);
+  return {
+    collected_at: timestamp && /(?:Z|[+-]\d{2}:\d{2})$/.test(timestamp) && !Number.isNaN(Date.parse(timestamp)) ? timestamp : null,
+    hostname: nonemptyString(data.hostname),
+    os: nonemptyString(data.os),
+    cpu_model: nonemptyString(data.cpu_model),
+    cpu_usage_percent: finiteNumber(data.cpu_usage_percent, 0, 100),
+    cpu_temperature_celsius: finiteNumber(data.cpu_temperature_celsius, -100, 200),
+    memory: capacity(data.memory),
+    storage: capacity(data.storage),
+    uptime_seconds: finiteNumber(data.uptime_seconds),
+    process_count: typeof data.process_count === "number" && Number.isInteger(data.process_count) ? finiteNumber(data.process_count) : null,
+    wifi_ipv4: ipv4(data.wifi_ipv4),
+    cloudflared_status: serviceStatus(data.cloudflared_status),
+    ssh_status: serviceStatus(data.ssh_status),
+    docker_status: serviceStatus(data.docker_status),
+  };
+}
+
 export async function readHostMetrics(): Promise<HostMetrics | null> {
   try {
-    const raw: unknown = JSON.parse(await readFile(METRICS_PATH, "utf8"));
-    const data = record(raw);
-    if (!data) return null;
-    const timestamp = nonemptyString(data.collected_at);
-    return {
-      collected_at: timestamp && /(?:Z|[+-]\d{2}:\d{2})$/.test(timestamp) && !Number.isNaN(Date.parse(timestamp)) ? timestamp : null,
-      hostname: nonemptyString(data.hostname),
-      os: nonemptyString(data.os),
-      cpu_model: nonemptyString(data.cpu_model),
-      cpu_usage_percent: finiteNumber(data.cpu_usage_percent, 0, 100),
-      cpu_temperature_celsius: finiteNumber(data.cpu_temperature_celsius, -100, 200),
-      memory: capacity(data.memory),
-      storage: capacity(data.storage),
-      uptime_seconds: finiteNumber(data.uptime_seconds),
-      process_count: typeof data.process_count === "number" && Number.isInteger(data.process_count) ? finiteNumber(data.process_count) : null,
-      wifi_ipv4: ipv4(data.wifi_ipv4),
-      cloudflared_status: serviceStatus(data.cloudflared_status),
-      ssh_status: serviceStatus(data.ssh_status),
-      docker_status: serviceStatus(data.docker_status),
-    };
+    return parseHostMetrics(JSON.parse(await readFile(METRICS_PATH, "utf8")));
   } catch {
     return null;
   }
+}
+
+export async function refreshHostMetrics(): Promise<{ host: HostMetrics | null; refreshed: boolean }> {
+  const requestId = randomUUID();
+  try {
+    await writeFile(join(REQUEST_DIR, `${requestId}.request`), "", { flag: "wx", mode: 0o600 });
+  } catch {
+    return { host: await readHostMetrics(), refreshed: false };
+  }
+
+  const deadline = Date.now() + REFRESH_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const response = record(JSON.parse(await readFile(join(RESPONSE_DIR, `${requestId}.json`), "utf8")));
+      if (response?.request_id === requestId) {
+        const host = parseHostMetrics(response.snapshot);
+        if (host?.collected_at) return { host, refreshed: true };
+        break;
+      }
+    } catch {
+      // The host has not published this request's response yet.
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(75, Math.max(0, deadline - Date.now()))));
+  }
+  return { host: await readHostMetrics(), refreshed: false };
+}
+
+export function isHostSnapshotStale(collectedAt: string | null): boolean {
+  if (!collectedAt) return false;
+  const age = Date.now() - Date.parse(collectedAt);
+  return age > STALE_AFTER_MS || age < -60_000;
+}
+
+export function formatLastUpdated(collectedAt: string | null): string {
+  if (!collectedAt) return "Tidak tersedia";
+  const date = new Date(collectedAt);
+  if (Number.isNaN(date.getTime())) return "Tidak tersedia";
+  const parts = new Intl.DateTimeFormat("id-ID", {
+    timeZone: "Asia/Jakarta", day: "numeric", month: "short", year: "numeric",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("day")} ${part("month")} ${part("year")}, ${part("hour")}:${part("minute")} WIB`;
 }
 
 export function formatPercent(value: number | null): string {

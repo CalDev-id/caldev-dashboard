@@ -12,11 +12,12 @@ services:
       - node_modules:/app/node_modules
       - next_cache:/app/.next
       - ./data:/run/caldev-metrics:ro
+      - ./data/metric-requests:/run/caldev-metric-requests:rw
     environment:
       NODE_ENV: development
       NEXT_TELEMETRY_DISABLED: "1"
     command: >
-      sh -c 'if [ ! -x node_modules/.bin/next ]; then npm ci; fi;
+      sh -c 'if [ ! -x node_modules/.bin/next ] || [ ! -d node_modules/next-auth ]; then npm ci; fi;
       exec npm run dev -- --hostname 0.0.0.0'
     restart: "no"
 

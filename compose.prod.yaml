@@ -1,0 +1,20 @@
+name: caldev-dashboard-prod
+
+services:
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    init: true
+    env_file:
+      - ${CALDEV_PROD_ENV_FILE:?Set CALDEV_PROD_ENV_FILE to the absolute path of the production credentials file}
+    environment:
+      NODE_ENV: production
+      AUTH_URL: https://server.caldev.my.id
+      AUTH_TRUST_HOST: "true"
+    ports:
+      - "127.0.0.1:3001:3000"
+    volumes:
+      - ./data:/run/caldev-metrics:ro
+      - ./data/metric-requests:/run/caldev-metric-requests:rw
+    restart: unless-stopped

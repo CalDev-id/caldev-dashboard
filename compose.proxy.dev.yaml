@@ -1,0 +1,9 @@
+name: caldev-dashboard-proxy-dev
+
+services:
+  nginx:
+    image: nginx:stable-alpine
+    network_mode: host
+    restart: "no"
+    volumes:
+      - ./nginx/dev.conf:/etc/nginx/nginx.conf:ro

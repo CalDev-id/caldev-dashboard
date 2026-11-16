@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for CALDEV dashboard metrics requests
+
+[Path]
+PathExistsGlob=/home/caldev/projects/caldev-dashboard/data/metric-requests/*.request
+Unit=caldev-metrics-refresh.service
+
+[Install]
+WantedBy=multi-user.target

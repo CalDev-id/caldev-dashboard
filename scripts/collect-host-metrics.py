@@ -207,7 +207,6 @@ def main():
     except OSError:
         hostname = None
     metrics = {
-        "collected_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "hostname": hostname,
         "os": operating_system(),
         "cpu_model": processor_model(),
@@ -222,6 +221,7 @@ def main():
         "ssh_status": service_status("ssh.service"),
         "docker_status": service_status("docker.service"),
     }
+    metrics["collected_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     write_json_atomically(metrics)
     print(OUTPUT_PATH)
 

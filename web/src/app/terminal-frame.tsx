@@ -83,7 +83,7 @@ export default function TerminalFrame({ url }: { url: string }) {
       <div className="min-h-0 flex-1">
         {failed ? (
           <div className="flex h-full items-center justify-center px-5 text-center text-sm text-slate-400">
-            <p>Terminal tidak dapat dimuat. Pastikan port 7681 diteruskan di VS Code, lalu <a className="text-blue-400 underline underline-offset-4" href={url} target="_blank" rel="noopener noreferrer">buka ttyd langsung</a>.</p>
+            <p>Terminal tidak dapat dimuat. Periksa layanan terminal.</p>
           </div>
         ) : mounted && (
           <iframe

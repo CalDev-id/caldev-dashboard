@@ -1,13 +1,23 @@
 import { Suspense } from "react";
 import { connection } from "next/server";
+import { redirect } from "next/navigation";
+import { headers } from "next/headers";
+import { auth } from "@/auth";
+import LogoutButton from "./logout-button";
 import TerminalPanel from "./terminal-panel";
+import { TerminalSessionProvider, TerminalVisibility } from "./terminal-session";
+import Loading from "./loading";
 import {
   formatGiB,
+  formatLastUpdated,
   formatPercent,
   formatTemperature,
   formatUptime,
-  readHostMetrics,
+  isHostSnapshotStale,
+  refreshHostMetrics,
 } from "@/lib/host-metrics";
+
+export const prefetch = "force-disabled";
 
 const terminalOptions = new URLSearchParams({
   theme: JSON.stringify({
@@ -24,7 +34,7 @@ const terminalOptions = new URLSearchParams({
   cursorBlink: "false",
   disableResizeOverlay: "true",
 });
-const terminalUrl = `http://127.0.0.1:7681/?${terminalOptions.toString()}`;
+const terminalUrl = `/terminal/?${terminalOptions.toString()}`;
 
 function MetricIcon({ kind }: { kind: "cpu" | "memory" | "storage" }) {
   return (
@@ -53,7 +63,21 @@ function MetricSparkline({ kind }: { kind: "cpu" | "memory" | "storage" }) {
 
 async function DashboardContent() {
   await connection();
-  const host = await readHostMetrics();
+  const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+  if (!adminEmail || !process.env.AUTH_SECRET || process.env.AUTH_SECRET.length < 32) {
+    redirect("/login");
+  }
+  const session = await auth();
+  const sessionEmail = session?.user?.email;
+  if (typeof sessionEmail !== "string" || sessionEmail.toLowerCase() !== adminEmail) {
+    redirect("/login");
+  }
+  const requestHeaders = await headers();
+  const isProduction = process.env.NODE_ENV === "production";
+  const terminalEnabled = isProduction
+    ? requestHeaders.get("host") === "server.caldev.my.id" && requestHeaders.get("x-forwarded-proto") === "https"
+    : process.env.NODE_ENV === "development" && requestHeaders.get("host") === "localhost:8080";
+  const { host, refreshed } = await refreshHostMetrics();
   const metrics = [
     { label: "CPU USAGE", kind: "cpu" as const, value: formatPercent(host?.cpu_usage_percent ?? null), detail: host?.cpu_model ?? "Processor unavailable", usage: host?.cpu_usage_percent ?? null, bar: "bg-blue-400", icon: "bg-blue-400/10 text-blue-400" },
     { label: "MEMORY", kind: "memory" as const, value: formatPercent(host?.memory?.usage_percent ?? null), detail: host?.memory ? `${formatGiB(host.memory.used_bytes)} / ${formatGiB(host.memory.total_bytes)}` : "Data unavailable", usage: host?.memory?.usage_percent ?? null, bar: "bg-violet-400", icon: "bg-violet-400/10 text-violet-400" },
@@ -66,8 +90,12 @@ async function DashboardContent() {
   const dockerStatus = host?.docker_status ?? null;
   const dockerLabel = dockerStatus ? dockerStatus[0].toUpperCase() + dockerStatus.slice(1) : "N/A";
   const snapshotAvailable = host?.collected_at != null;
+  const snapshotStale = isHostSnapshotStale(host?.collected_at ?? null);
+  const snapshotCurrent = refreshed && snapshotAvailable && !snapshotStale;
+  const snapshotLabel = snapshotCurrent ? "Data terbaru" : snapshotAvailable ? "Snapshot sebelumnya" : "Data tidak tersedia";
 
   return (
+    <TerminalSessionProvider>
     <main className="min-h-screen bg-[#080e1b] font-sans text-slate-100">
       <div className="mx-auto max-w-6xl px-4 pb-12 sm:px-6 lg:px-8">
         <div className="pt-9 sm:pt-12">
@@ -77,13 +105,16 @@ async function DashboardContent() {
               <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">CalDev Server</h1>
               <p className="mt-2 text-sm text-slate-400 sm:text-base">Personal Development Infrastructure</p>
             </div>
-            <div className={`flex items-center gap-3 self-start rounded-xl border px-4 py-3 sm:self-auto ${snapshotAvailable ? "border-emerald-400/15 bg-emerald-400/[0.06]" : "border-slate-600/30 bg-slate-500/[0.06]"}`}>
-              <span className={`h-2.5 w-2.5 rounded-full ${snapshotAvailable ? "bg-emerald-400" : "bg-slate-500"}`} aria-hidden="true" />
-              <div><p className={`text-sm font-semibold ${snapshotAvailable ? "text-emerald-300" : "text-slate-300"}`}>{snapshotAvailable ? "Server online" : "Data unavailable"}</p><p className="text-[11px] text-slate-500">Last snapshot</p></div>
+            <div className="flex w-full flex-wrap items-center justify-between gap-3 sm:w-auto sm:justify-end">
+              <div className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${snapshotCurrent ? "border-emerald-400/15 bg-emerald-400/[0.06]" : "border-slate-600/30 bg-slate-500/[0.06]"}`}>
+                <span className={`h-2.5 w-2.5 rounded-full ${snapshotCurrent ? "bg-emerald-400" : "bg-slate-500"}`} aria-hidden="true" />
+                <div><p className={`text-sm font-semibold ${snapshotCurrent ? "text-emerald-300" : "text-slate-300"}`}>{snapshotLabel}</p><p className="text-[11px] text-slate-500">Last updated: {formatLastUpdated(host?.collected_at ?? null)}</p>{snapshotStale && <p className="text-[11px] text-amber-300">Data lama</p>}{!refreshed && snapshotAvailable && <p className="text-[11px] text-amber-300">Refresh gagal</p>}</div>
+              </div>
+              <LogoutButton />
             </div>
           </div>
 
-          <div className="mt-8 rounded-xl border border-blue-400/15 bg-blue-400/[0.055] px-4 py-3 text-xs leading-relaxed text-blue-100/75 sm:text-sm" role="note"><span className="mr-2 font-bold tracking-wide text-blue-300">HOST DATA</span>{snapshotAvailable ? "Metrics below come from the latest collected snapshot. Refresh the page after collecting new data." : "No valid host snapshot is available. Missing values are shown as N/A."}</div>
+          <div className="mt-8 rounded-xl border border-blue-400/15 bg-blue-400/[0.055] px-4 py-3 text-xs leading-relaxed text-blue-100/75 sm:text-sm" role="note"><span className="mr-2 font-bold tracking-wide text-blue-300">HOST DATA</span>{snapshotAvailable ? "Hardware host diperbarui saat dashboard dibuka atau di-refresh. Jika refresh gagal, snapshot terakhir ditampilkan." : "No valid host snapshot is available. Missing values are shown as N/A."}</div>
 
           <section className="mt-9" aria-labelledby="resources-title">
             <div className="mb-4 flex items-center justify-between gap-4"><h2 id="resources-title" className="text-base font-semibold text-white sm:text-lg">Resource usage</h2></div>
@@ -129,16 +160,19 @@ async function DashboardContent() {
             </section>
           </div>
 
-          <TerminalPanel url={terminalUrl} enabled={process.env.NODE_ENV === "development"} />
+          <TerminalVisibility>
+            <TerminalPanel url={terminalUrl} enabled={terminalEnabled} dashboardUrl={isProduction ? "https://server.caldev.my.id" : "http://localhost:8080"} />
+          </TerminalVisibility>
         </div>
       </div>
     </main>
+    </TerminalSessionProvider>
   );
 }
 
 export default function Home() {
   return (
-    <Suspense fallback={<main className="min-h-screen bg-[#080e1b] px-4 pt-10 text-sm text-slate-400">Loading host metrics…</main>}>
+    <Suspense fallback={<Loading />}>
       <DashboardContent />
     </Suspense>
   );

@@ -1,0 +1,13 @@
+[Unit]
+Description=Collect CALDEV host metrics on dashboard request
+
+[Service]
+Type=oneshot
+User=caldev
+WorkingDirectory=/home/caldev/projects/caldev-dashboard
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/home/caldev/projects/caldev-dashboard/data
+TimeoutStartSec=20s
+ExecStart=/usr/bin/python3 /home/caldev/projects/caldev-dashboard/scripts/serve-metrics-requests.py
